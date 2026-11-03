@@ -8,12 +8,12 @@
   </head>
   <body>
     <main>
-      <section id="auth-screen" aria-labelledby="auth-title">
+      <section id="auth-screen" data-state="initializing" aria-labelledby="auth-title">
         <div class="auth-card">
           <p class="auth-card__eyebrow">Kasatria Assignment</p>
-          <h1 id="auth-title">Welcome to People Visualization</h1>
-          <p>Sign in with Google to securely read the shared people dataset from Google Sheets.</p>
-          <button id="sign-in-button" class="google-button" type="button" disabled>Sign in with Google</button>
+          <h1 id="auth-title">Preparing People Visualization</h1>
+          <p id="auth-description">Checking for a saved session…</p>
+          <button id="sign-in-button" class="google-button" type="button" disabled hidden>Sign in with Google</button>
           <p id="auth-status" class="auth-card__status" role="status">Preparing secure sign-in…</p>
         </div>
       </section>

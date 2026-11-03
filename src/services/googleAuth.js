@@ -36,7 +36,9 @@ function getAuthorizationError(error) {
   const errorType = error?.type ?? error?.error;
   if (errorType === 'popup_closed') return 'Google sign-in was cancelled.';
   if (errorType === 'popup_failed_to_open') return 'Google sign-in popup could not be opened. Allow popups and try again.';
-  if (errorType === 'access_denied') return 'Google Sheets access was not granted.';
+  if (errorType === 'access_denied') {
+    return error?.error_description ?? 'Google authorization was denied. Approve Google Sheets read access to continue.';
+  }
   return error?.error_description || 'Google authorization could not be completed.';
 }
 
@@ -68,7 +70,7 @@ export class GoogleTokenSession {
     return new Promise((resolve, reject) => {
       this.pendingAuthorization = { resolve, reject };
       try {
-        this.tokenClient.requestAccessToken({ prompt: 'select_account consent' });
+        this.tokenClient.requestAccessToken({ prompt: 'select_account' });
       } catch (error) {
         this.handleAuthorizationError(error);
       }
@@ -123,8 +125,4 @@ export class GoogleTokenSession {
     };
   }
 
-  revoke(accessToken) {
-    if (!accessToken || !this.google?.accounts?.oauth2?.revoke) return;
-    this.google.accounts.oauth2.revoke(accessToken, () => {});
-  }
 }

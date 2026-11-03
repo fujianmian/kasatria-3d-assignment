@@ -43,7 +43,7 @@ Restart Vite after changing `.env.local`. Vite variables prefixed with `VITE_` a
 
 After a successful authorization, the app keeps a short-lived session in `sessionStorage` so a same-tab refresh can restore the visualization without opening an OAuth popup. The session lasts at most 30 minutes and ends earlier if the Google access token is within 60 seconds of its actual `expires_in` expiry. A same-origin tab can request a still-valid session through `BroadcastChannel`, then independently validates it with Google before rendering.
 
-Access tokens are never stored in `localStorage`, URLs, or a backend. `sessionStorage` is not protection against XSS, so this browser-only approach is appropriate only for the assignment's short-lived demonstration session. Signing out clears the local session and notifies same-origin tabs.
+Access tokens are never stored in `localStorage`, URLs, or a backend. `sessionStorage` is not protection against XSS, so this browser-only approach is appropriate only for the assignment's short-lived demonstration session. Signing out clears the local session and notifies same-origin tabs; it intentionally does not revoke the user's Google OAuth grant, which would force a new consent flow on the next sign-in.
 
 ## Production build
 

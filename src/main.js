@@ -3,6 +3,7 @@ import { GoogleTokenSession } from './services/googleAuth.js';
 import { loadPeopleFromGoogleSheets } from './services/googleSheets.js';
 import { SessionChannel } from './services/sessionChannel.js';
 import { SessionPersistence, createPersistedSession, isValidPersistedSession } from './services/sessionPersistence.js';
+import { restoreAuthorizedSession } from './services/sessionRestoration.js';
 import { PeopleVisualization } from './visualization.js';
 
 const configuration = {
@@ -14,6 +15,8 @@ const configuration = {
 const authScreen = document.querySelector('#auth-screen');
 const appShell = document.querySelector('#app-shell');
 const authStatus = document.querySelector('#auth-status');
+const authTitle = document.querySelector('#auth-title');
+const authDescription = document.querySelector('#auth-description');
 const appStatus = document.querySelector('#status');
 const signInButton = document.querySelector('#sign-in-button');
 const signOutButton = document.querySelector('#sign-out-button');
@@ -26,6 +29,8 @@ let visualization = null;
 let accessToken = null;
 let sessionVersion = 0;
 let invalidationVersion = 0;
+let isGoogleReady = false;
+let isSignInInProgress = false;
 const googleSession = new GoogleTokenSession({ clientId: configuration.clientId });
 const sessionPersistence = new SessionPersistence();
 const sessionChannel = new SessionChannel({
@@ -36,6 +41,24 @@ const sessionChannel = new SessionChannel({
 function setAuthStatus(message, isError = false) {
   authStatus.textContent = message;
   authStatus.classList.toggle('status--error', isError);
+}
+
+function showRestoringState(message) {
+  authScreen.dataset.state = 'initializing';
+  authTitle.textContent = 'Preparing People Visualization';
+  authDescription.textContent = 'Checking your saved Google session…';
+  signInButton.hidden = true;
+  signInButton.disabled = true;
+  setAuthStatus(message);
+}
+
+function showSignInState(message, isError = false) {
+  authScreen.dataset.state = 'sign-in';
+  authTitle.textContent = 'Welcome to People Visualization';
+  authDescription.textContent = 'Sign in with Google to securely read the shared people dataset from Google Sheets.';
+  signInButton.hidden = false;
+  signInButton.disabled = !isGoogleReady;
+  setAuthStatus(message, isError);
 }
 
 function setAppControlsEnabled(enabled) {
@@ -72,7 +95,7 @@ function returnToLogin(message, isError = false) {
   appShell.hidden = true;
   appStatus.classList.remove('status--success');
   authScreen.hidden = false;
-  setAuthStatus(message, isError);
+  showSignInState(message, isError);
 }
 
 function invalidateSession(message, isError = false) {
@@ -87,41 +110,58 @@ function isAuthenticationFailure(error) {
   return error?.code === 'UNAUTHORIZED';
 }
 
-async function restoreOrLoadSession(session, { strictProfileValidation }) {
-  if (!isValidPersistedSession(session, configuration)) return false;
+function logRestoreDiagnostic(stage, error) {
+  if (!import.meta.env.DEV) return;
+  console.warn('[Session restoration]', {
+    stage,
+    code: error?.code ?? 'unknown',
+    message: error?.message ?? 'No diagnostic message',
+  });
+}
+
+async function restoreOrLoadSession(session) {
+  if (!isValidPersistedSession(session, configuration)) {
+    return { restored: false, error: new Error('The saved session is no longer valid.') };
+  }
   const attemptVersion = ++sessionVersion;
   const attemptInvalidationVersion = invalidationVersion;
   accessToken = session.accessToken;
   setAuthStatus('Restoring your Google session…');
 
   try {
-    const profilePromise = googleSession.getUserProfile(accessToken);
-    const peoplePromise = loadPeopleFromGoogleSheets({
+    const { profile, people, profileError } = await restoreAuthorizedSession({
       accessToken,
-      spreadsheetId: configuration.spreadsheetId,
-      range: configuration.sheetRange,
+      googleSession,
+      loadPeople: ({ accessToken: restoredToken }) => loadPeopleFromGoogleSheets({
+        accessToken: restoredToken,
+        spreadsheetId: configuration.spreadsheetId,
+        range: configuration.sheetRange,
+      }),
     });
-    const [profile, people] = await Promise.all([
-      strictProfileValidation ? profilePromise : profilePromise.catch(() => ({ name: 'Google account', email: '' })),
-      peoplePromise,
-    ]);
-    if (attemptVersion !== sessionVersion || attemptInvalidationVersion !== invalidationVersion) return false;
-    if (people.length !== 200) throw new Error(`Expected 200 people records but received ${people.length}.`);
+    if (attemptVersion !== sessionVersion || attemptInvalidationVersion !== invalidationVersion) {
+      return { restored: false, stale: true };
+    }
+    if (profileError) logRestoreDiagnostic('Userinfo unavailable; fallback profile applied', profileError);
     showAuthenticatedApp(profile, people);
-    return true;
+    return { restored: true };
   } catch (error) {
-    if (attemptVersion !== sessionVersion || attemptInvalidationVersion !== invalidationVersion) return false;
+    if (attemptVersion !== sessionVersion || attemptInvalidationVersion !== invalidationVersion) {
+      return { restored: false, stale: true };
+    }
     accessToken = null;
+    logRestoreDiagnostic('Google validation failed', error);
     if (isAuthenticationFailure(error)) {
       invalidateSession('Your session has expired. Please sign in again.', true);
     } else {
       returnToLogin(error.message, true);
     }
-    return false;
+    return { restored: false, error };
   }
 }
 
 async function signIn() {
+  if (!isGoogleReady || isSignInInProgress) return;
+  isSignInInProgress = true;
   signInButton.disabled = true;
   setAuthStatus('Opening Google sign-in…');
 
@@ -130,18 +170,17 @@ async function signIn() {
     const session = createPersistedSession(tokenResponse, configuration);
     sessionPersistence.save(session);
     setAuthStatus('Loading people from Google Sheets…');
-    await restoreOrLoadSession(session, { strictProfileValidation: false });
+    await restoreOrLoadSession(session);
   } catch (error) {
     invalidateSession(error.message, true);
   } finally {
+    isSignInInProgress = false;
     if (!visualization) signInButton.disabled = false;
   }
 }
 
 function signOut({ broadcast = true, message = 'You have signed out. Sign in with Google to continue.' } = {}) {
-  const tokenToRevoke = accessToken;
   invalidateSession(message);
-  googleSession.revoke(tokenToRevoke);
   if (broadcast) sessionChannel.broadcastSignOut();
 }
 
@@ -161,31 +200,50 @@ window.addEventListener('pagehide', () => sessionChannel.close(), { once: true }
 
 async function initializeAuthentication() {
   if (!configuration.spreadsheetId) {
-    setAuthStatus('Google Spreadsheet ID is missing. Add VITE_GOOGLE_SPREADSHEET_ID to .env.local.', true);
+    showSignInState('Google Spreadsheet ID is missing. Add VITE_GOOGLE_SPREADSHEET_ID to .env.local.', true);
     signInButton.disabled = true;
     return;
   }
 
   try {
-    setAuthStatus('Preparing secure Google sign-in…');
+    showRestoringState('Preparing secure Google sign-in…');
     await googleSession.initialize();
+    isGoogleReady = true;
 
-    const storedSession = sessionPersistence.read(configuration);
-    if (storedSession && await restoreOrLoadSession(storedSession, { strictProfileValidation: true })) return;
+    const storedSessionResult = sessionPersistence.readWithStatus(configuration);
+    let restorationError = null;
+    if (storedSessionResult.session) {
+      const result = await restoreOrLoadSession(storedSessionResult.session);
+      if (result.restored) return;
+      restorationError = result.error ?? null;
+    } else if (storedSessionResult.reason !== 'missing') {
+      const messages = {
+        malformed: 'The saved session was malformed and has been cleared. Please sign in again.',
+        invalid: 'The saved session was invalid and has been cleared. Please sign in again.',
+        expired: 'Your session has expired. Please sign in again.',
+        'configuration-mismatch': 'The saved session does not match the current application configuration. Please sign in again.',
+      };
+      restorationError = new Error(messages[storedSessionResult.reason] ?? 'Unable to restore the saved session.');
+      setAuthStatus(restorationError.message, true);
+      logRestoreDiagnostic(`Stored session ${storedSessionResult.reason}`, restorationError);
+    }
 
     const channelRequestInvalidationVersion = invalidationVersion;
     const sharedSession = await sessionChannel.requestSession();
     if (channelRequestInvalidationVersion !== invalidationVersion) return;
     if (sharedSession && isValidPersistedSession(sharedSession, configuration)) {
       sessionPersistence.save(sharedSession);
-      if (await restoreOrLoadSession(sharedSession, { strictProfileValidation: true })) return;
+      const result = await restoreOrLoadSession(sharedSession);
+      if (result.restored) return;
+      restorationError = result.error ?? restorationError;
     }
 
-    setAuthStatus('Sign in with Google to load the people visualization.');
-    signInButton.disabled = false;
+    showSignInState(
+      restorationError?.message ?? 'Sign in with Google to load the people visualization.',
+      Boolean(restorationError),
+    );
   } catch (error) {
-    setAuthStatus(error.message, true);
-    signInButton.disabled = true;
+    showSignInState(error.message, true);
   }
 }
 

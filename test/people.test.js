@@ -6,6 +6,7 @@ import { getNetWorthTier } from '../src/data/netWorth.js';
 import { createSheetsValuesUrl, loadPeopleFromGoogleSheets } from '../src/services/googleSheets.js';
 import { GoogleTokenSession, GOOGLE_SCOPES } from '../src/services/googleAuth.js';
 import { SessionChannel } from '../src/services/sessionChannel.js';
+import { FALLBACK_PROFILE, restoreAuthorizedSession } from '../src/services/sessionRestoration.js';
 import {
   APPLICATION_SESSION_DURATION_MS,
   TOKEN_EXPIRY_MARGIN_MS,
@@ -332,8 +333,8 @@ test('does not proceed with a Google token missing the Sheets readonly scope', a
   const authorization = session.requestAccessToken();
   tokenClientConfig.callback({ access_token: 'unscoped-token', scope: GOOGLE_SCOPES.slice(0, 3).join(' ') });
 
-  await assert.rejects(authorization, /Google Sheets access was not granted/i);
-  assert.equal(tokenRequestConfig.prompt, 'select_account consent');
+  await assert.rejects(authorization, /Google Sheets read access is required/i);
+  assert.equal(tokenRequestConfig.prompt, 'select_account');
 });
 
 test('returns the complete OAuth token response after a successful authorization', async () => {
@@ -439,6 +440,71 @@ test('clearing persisted state leaves no token available for a later restore or 
   assert.equal(stored.getItem('kasatria.people-session.v1'), null);
 });
 
+test('restores a saved session after reload when Userinfo has a non-authentication failure', async () => {
+  const stored = new MemoryStorage();
+  const persistence = new SessionPersistence({ storage: stored, now: () => 50_000 });
+  const originalSession = createPersistedSession(
+    { access_token: 'token', expires_in: 3600, scope: GOOGLE_SCOPES.join(' ') },
+    sessionConfiguration,
+    50_000,
+  );
+  persistence.save(originalSession);
+  const restoredSession = persistence.readWithStatus(sessionConfiguration).session;
+  assert.deepEqual(restoredSession, originalSession);
+
+  const result = await restoreAuthorizedSession({
+    accessToken: restoredSession.accessToken,
+    googleSession: {
+      getUserProfile: async () => {
+        const error = new Error('Userinfo is temporarily unavailable.');
+        error.code = 'PROFILE_REQUEST_FAILED';
+        throw error;
+      },
+    },
+    loadPeople: async () => people,
+  });
+  assert.deepEqual(result.profile, FALLBACK_PROFILE);
+  assert.equal(result.profileError.code, 'PROFILE_REQUEST_FAILED');
+  assert.equal(result.people.length, 200);
+});
+
+test('does not restore a session when Userinfo or Sheets reports 401', async () => {
+  await assert.rejects(
+    restoreAuthorizedSession({
+      accessToken: 'token',
+      googleSession: {
+        getUserProfile: async () => {
+          const error = new Error('Unauthorized');
+          error.code = 'UNAUTHORIZED';
+          throw error;
+        },
+      },
+      loadPeople: async () => people,
+    }),
+    (error) => error.code === 'UNAUTHORIZED',
+  );
+  await assert.rejects(
+    restoreAuthorizedSession({
+      accessToken: 'token',
+      googleSession: { getUserProfile: async () => ({ name: 'User', email: 'user@example.test' }) },
+      loadPeople: async () => {
+        const error = new Error('Session expired');
+        error.code = 'UNAUTHORIZED';
+        throw error;
+      },
+    }),
+    (error) => error.code === 'UNAUTHORIZED',
+  );
+});
+
+test('retains restoration errors instead of overwriting them with generic sign-in text', async () => {
+  const mainSource = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
+  assert.match(mainSource, /restorationError\?\.message \?\? 'Sign in with Google to load the people visualization\.'/);
+  assert.match(mainSource, /Boolean\(restorationError\)/);
+  assert.match(mainSource, /Stored session \$\{storedSessionResult\.reason\}/);
+  assert.match(mainSource, /Userinfo unavailable; fallback profile applied/);
+});
+
 test('marks restored 401 responses as authentication failures while preserving network errors', async () => {
   await assert.rejects(
     loadPeopleFromGoogleSheets({
@@ -478,4 +544,25 @@ test('does not initiate an OAuth popup during page initialization', async () => 
   assert.match(mainSource, /sessionPersistence\.save\(session\)/);
   assert.match(mainSource, /if \(visualization\) return;/);
   assert.match(mainSource, /attemptInvalidationVersion !== invalidationVersion/);
+});
+
+test('returns a ready Google session to an enabled sign-in state without a login-screen flash', async () => {
+  const [mainSource, html] = await Promise.all([
+    readFile(new URL('../src/main.js', import.meta.url), 'utf8'),
+    readFile(new URL('../index.html', import.meta.url), 'utf8'),
+  ]);
+  assert.match(html, /id="auth-screen" data-state="initializing"/);
+  assert.match(html, /id="sign-in-button"[^>]*hidden/);
+  assert.match(mainSource, /signInButton\.disabled = !isGoogleReady/);
+  assert.match(mainSource, /authScreen\.dataset\.state = 'initializing'/);
+  assert.match(mainSource, /if \(!isGoogleReady \|\| isSignInInProgress\) return;/);
+});
+
+test('signing out clears the app session without revoking the Google OAuth grant', async () => {
+  const [mainSource, authSource] = await Promise.all([
+    readFile(new URL('../src/main.js', import.meta.url), 'utf8'),
+    readFile(new URL('../src/services/googleAuth.js', import.meta.url), 'utf8'),
+  ]);
+  assert.doesNotMatch(mainSource, /googleSession\.revoke\(/);
+  assert.doesNotMatch(authSource, /\brevoke\(/);
 });

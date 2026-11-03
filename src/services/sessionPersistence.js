@@ -29,22 +29,31 @@ export function createPersistedSession(tokenResponse, configuration, now = Date.
 }
 
 export function isValidPersistedSession(session, configuration, now = Date.now()) {
-  return Boolean(
-    session
+  return validatePersistedSession(session, configuration, now).valid;
+}
+
+export function validatePersistedSession(session, configuration, now = Date.now()) {
+  const hasRequiredFields = session
     && typeof session.accessToken === 'string'
     && typeof session.scope === 'string'
     && Number.isFinite(session.issuedAt)
     && Number.isFinite(session.tokenExpiresAt)
     && Number.isFinite(session.sessionExpiresAt)
-    && Number.isFinite(session.effectiveExpiresAt)
-    && session.clientId === configuration.clientId
-    && session.spreadsheetId === configuration.spreadsheetId
-    && session.sheetRange === configuration.sheetRange
-    && now < session.effectiveExpiresAt
-    && session.sessionExpiresAt <= session.issuedAt + APPLICATION_SESSION_DURATION_MS
-    && session.effectiveExpiresAt <= session.sessionExpiresAt
-    && session.effectiveExpiresAt <= session.tokenExpiresAt - TOKEN_EXPIRY_MARGIN_MS,
-  );
+    && Number.isFinite(session.effectiveExpiresAt);
+  if (!hasRequiredFields) return { valid: false, reason: 'invalid' };
+  if (session.clientId !== configuration.clientId
+    || session.spreadsheetId !== configuration.spreadsheetId
+    || session.sheetRange !== configuration.sheetRange) {
+    return { valid: false, reason: 'configuration-mismatch' };
+  }
+  if (now >= session.effectiveExpiresAt) return { valid: false, reason: 'expired' };
+  if (session.sessionExpiresAt > session.issuedAt + APPLICATION_SESSION_DURATION_MS
+    || session.sessionExpiresAt <= session.issuedAt
+    || session.effectiveExpiresAt > session.sessionExpiresAt
+    || session.effectiveExpiresAt > session.tokenExpiresAt - TOKEN_EXPIRY_MARGIN_MS) {
+    return { valid: false, reason: 'invalid' };
+  }
+  return { valid: true, reason: null };
 }
 
 export class SessionPersistence {
@@ -59,21 +68,26 @@ export class SessionPersistence {
   }
 
   read(configuration) {
+    return this.readWithStatus(configuration).session;
+  }
+
+  readWithStatus(configuration) {
     let session;
     try {
       const serialized = this.storage.getItem(this.key);
-      if (!serialized) return null;
+      if (!serialized) return { session: null, reason: 'missing' };
       session = JSON.parse(serialized);
     } catch {
       this.clear();
-      return null;
+      return { session: null, reason: 'malformed' };
     }
 
-    if (!isValidPersistedSession(session, configuration, this.now())) {
+    const validation = validatePersistedSession(session, configuration, this.now());
+    if (!validation.valid) {
       this.clear();
-      return null;
+      return { session: null, reason: validation.reason };
     }
-    return session;
+    return { session, reason: null };
   }
 
   clear() {
