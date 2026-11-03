@@ -29,6 +29,12 @@ function getSheetsErrorMessage(status, errorPayload) {
   return messages[status] ?? (googleMessage || `Google Sheets request failed (${googleStatus || `HTTP ${status}`}).`);
 }
 
+function createSheetsError(status, errorPayload) {
+  const error = new Error(getSheetsErrorMessage(status, errorPayload));
+  error.code = status === 401 ? 'UNAUTHORIZED' : 'SHEETS_REQUEST_FAILED';
+  return error;
+}
+
 export async function loadPeopleFromGoogleSheets({
   accessToken,
   spreadsheetId,
@@ -44,14 +50,16 @@ export async function loadPeopleFromGoogleSheets({
       headers: { Authorization: `Bearer ${accessToken}` },
     });
   } catch (error) {
-    throw new Error(`Unable to reach Google Sheets. Check your connection and try again. (${error.message})`);
+    const networkError = new Error(`Unable to reach Google Sheets. Check your connection and try again. (${error.message})`);
+    networkError.code = 'NETWORK_ERROR';
+    throw networkError;
   }
 
   if (!response.ok) {
     const errorPayload = typeof response.json === 'function'
       ? await response.json().catch(() => null)
       : null;
-    throw new Error(getSheetsErrorMessage(response.status, errorPayload));
+    throw createSheetsError(response.status, errorPayload);
   }
 
   let payload;

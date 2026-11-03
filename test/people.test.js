@@ -5,6 +5,13 @@ import { parsePeopleCsv } from '../test-support/parsePeopleCsv.js';
 import { getNetWorthTier } from '../src/data/netWorth.js';
 import { createSheetsValuesUrl, loadPeopleFromGoogleSheets } from '../src/services/googleSheets.js';
 import { GoogleTokenSession, GOOGLE_SCOPES } from '../src/services/googleAuth.js';
+import { SessionChannel } from '../src/services/sessionChannel.js';
+import {
+  APPLICATION_SESSION_DURATION_MS,
+  TOKEN_EXPIRY_MARGIN_MS,
+  SessionPersistence,
+  createPersistedSession,
+} from '../src/services/sessionPersistence.js';
 import { getPeopleCardClass } from '../src/peopleCard.js';
 import {
   DOUBLE_HELIX_TURNS,
@@ -17,6 +24,33 @@ import {
 
 const csvBytes = await readFile(new URL('./fixtures/people.csv', import.meta.url));
 const people = parsePeopleCsv(csvBytes);
+const sessionConfiguration = {
+  clientId: 'client-id',
+  spreadsheetId: 'spreadsheet-id',
+  sheetRange: 'A:F',
+};
+
+class MemoryStorage {
+  constructor() { this.values = new Map(); }
+  getItem(key) { return this.values.get(key) ?? null; }
+  setItem(key, value) { this.values.set(key, value); }
+  removeItem(key) { this.values.delete(key); }
+}
+
+function createChannelFactory() {
+  const channels = [];
+  return () => {
+    const channel = {
+      onmessage: null,
+      postMessage(message) {
+        channels.filter((other) => other !== channel).forEach((other) => other.onmessage?.({ data: message }));
+      },
+      close() {},
+    };
+    channels.push(channel);
+    return channel;
+  };
+}
 
 test('parses all 200 people in original CSV order', () => {
   assert.equal(people.length, 200);
@@ -302,6 +336,130 @@ test('does not proceed with a Google token missing the Sheets readonly scope', a
   assert.equal(tokenRequestConfig.prompt, 'select_account consent');
 });
 
+test('returns the complete OAuth token response after a successful authorization', async () => {
+  let tokenClientConfig;
+  const google = {
+    accounts: {
+      oauth2: {
+        initTokenClient: (config) => {
+          tokenClientConfig = config;
+          return { requestAccessToken() {} };
+        },
+        hasGrantedAllScopes: () => true,
+      },
+    },
+  };
+  const session = new GoogleTokenSession({ clientId: 'client-id', loadIdentityServices: async () => google });
+  await session.initialize();
+  const authorization = session.requestAccessToken();
+  tokenClientConfig.callback({ access_token: 'token', expires_in: 3600, scope: GOOGLE_SCOPES.join(' ') });
+  assert.deepEqual(await authorization, { access_token: 'token', expires_in: 3600, scope: GOOGLE_SCOPES.join(' ') });
+});
+
+test('persists a session for at most 30 minutes and never extends it on refresh', () => {
+  const now = 1_000_000;
+  const stored = new MemoryStorage();
+  const session = createPersistedSession(
+    { access_token: 'token', expires_in: 3600, scope: GOOGLE_SCOPES.join(' ') },
+    sessionConfiguration,
+    now,
+  );
+  assert.equal(session.effectiveExpiresAt, now + APPLICATION_SESSION_DURATION_MS);
+  const persistence = new SessionPersistence({ storage: stored, now: () => now + APPLICATION_SESSION_DURATION_MS - 1 });
+  persistence.save(session);
+  assert.equal(persistence.read(sessionConfiguration).effectiveExpiresAt, session.effectiveExpiresAt);
+
+  const expiredPersistence = new SessionPersistence({ storage: stored, now: () => now + APPLICATION_SESSION_DURATION_MS });
+  assert.equal(expiredPersistence.read(sessionConfiguration), null);
+  assert.equal(stored.getItem('kasatria.people-session.v1'), null);
+});
+
+test('uses the earlier token expiry minus a 60-second margin', () => {
+  const now = 2_000_000;
+  const session = createPersistedSession(
+    { access_token: 'token', expires_in: 600, scope: GOOGLE_SCOPES.join(' ') },
+    sessionConfiguration,
+    now,
+  );
+  assert.equal(session.effectiveExpiresAt, now + 600_000 - TOKEN_EXPIRY_MARGIN_MS);
+});
+
+test('rejects malformed, expired, or configuration-mismatched sessions', () => {
+  const stored = new MemoryStorage();
+  const persistence = new SessionPersistence({ storage: stored, now: () => 10_000 });
+  stored.setItem('kasatria.people-session.v1', '{invalid json');
+  assert.equal(persistence.read(sessionConfiguration), null);
+
+  stored.setItem('kasatria.people-session.v1', JSON.stringify({ accessToken: 'token' }));
+  assert.equal(persistence.read(sessionConfiguration), null);
+
+  const validSession = createPersistedSession(
+    { access_token: 'token', expires_in: 3600, scope: '' },
+    sessionConfiguration,
+    10_000,
+  );
+  validSession.spreadsheetId = 'different-sheet';
+  persistence.save(validSession);
+  assert.equal(persistence.read(sessionConfiguration), null);
+});
+
+test('shares one valid session with a new same-origin tab and synchronizes sign-out', async () => {
+  const session = createPersistedSession(
+    { access_token: 'token', expires_in: 3600, scope: GOOGLE_SCOPES.join(' ') },
+    sessionConfiguration,
+    Date.now(),
+  );
+  const factory = createChannelFactory();
+  let signOutReceived = false;
+  const owner = new SessionChannel({ channelFactory: factory, getSession: () => session, onSignOut() {} });
+  const newTab = new SessionChannel({
+    channelFactory: factory,
+    getSession: () => null,
+    onSignOut: () => { signOutReceived = true; },
+  });
+
+  assert.deepEqual(await newTab.requestSession(), session);
+  owner.broadcastSignOut();
+  assert.equal(signOutReceived, true);
+  owner.close();
+  newTab.close();
+});
+
+test('clearing persisted state leaves no token available for a later restore or tab share', () => {
+  const stored = new MemoryStorage();
+  const persistence = new SessionPersistence({ storage: stored, now: () => 10_000 });
+  const session = createPersistedSession(
+    { access_token: 'token', expires_in: 3600, scope: GOOGLE_SCOPES.join(' ') },
+    sessionConfiguration,
+    10_000,
+  );
+  persistence.save(session);
+  persistence.clear();
+  assert.equal(persistence.read(sessionConfiguration), null);
+  assert.equal(stored.getItem('kasatria.people-session.v1'), null);
+});
+
+test('marks restored 401 responses as authentication failures while preserving network errors', async () => {
+  await assert.rejects(
+    loadPeopleFromGoogleSheets({
+      accessToken: 'token',
+      spreadsheetId: 'sheet',
+      range: 'A:F',
+      fetchImplementation: async () => ({ ok: false, status: 401, json: async () => ({}) }),
+    }),
+    (error) => error.code === 'UNAUTHORIZED',
+  );
+  await assert.rejects(
+    loadPeopleFromGoogleSheets({
+      accessToken: 'token',
+      spreadsheetId: 'sheet',
+      range: 'A:F',
+      fetchImplementation: async () => { throw new Error('offline'); },
+    }),
+    (error) => error.code === 'NETWORK_ERROR',
+  );
+});
+
 test('validates Sheets URLs without putting tokens in the request URL', () => {
   const url = createSheetsValuesUrl('a spreadsheet/id', 'People A:F');
   assert.match(url, /a%20spreadsheet%2Fid/);
@@ -309,4 +467,15 @@ test('validates Sheets URLs without putting tokens in the request URL', () => {
   assert.equal(url.includes('token'), false);
   assert.throws(() => createSheetsValuesUrl('', 'A:F'), /Spreadsheet ID is missing/);
   assert.throws(() => createSheetsValuesUrl('sheet', ''), /Sheet range is missing/);
+});
+
+test('does not initiate an OAuth popup during page initialization', async () => {
+  const mainSource = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
+  const signInFunctionOffset = mainSource.indexOf('async function signIn()');
+  assert.ok(signInFunctionOffset > -1);
+  assert.equal(mainSource.slice(0, signInFunctionOffset).includes('requestAccessToken()'), false);
+  assert.match(mainSource, /signInButton\.addEventListener\('click', signIn\)/);
+  assert.match(mainSource, /sessionPersistence\.save\(session\)/);
+  assert.match(mainSource, /if \(visualization\) return;/);
+  assert.match(mainSource, /attemptInvalidationVersion !== invalidationVersion/);
 });

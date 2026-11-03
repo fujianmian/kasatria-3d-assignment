@@ -1,6 +1,8 @@
 import './styles.css';
 import { GoogleTokenSession } from './services/googleAuth.js';
 import { loadPeopleFromGoogleSheets } from './services/googleSheets.js';
+import { SessionChannel } from './services/sessionChannel.js';
+import { SessionPersistence, createPersistedSession, isValidPersistedSession } from './services/sessionPersistence.js';
 import { PeopleVisualization } from './visualization.js';
 
 const configuration = {
@@ -22,7 +24,14 @@ const layoutButtons = document.querySelectorAll('[data-layout]');
 
 let visualization = null;
 let accessToken = null;
+let sessionVersion = 0;
+let invalidationVersion = 0;
 const googleSession = new GoogleTokenSession({ clientId: configuration.clientId });
+const sessionPersistence = new SessionPersistence();
+const sessionChannel = new SessionChannel({
+  getSession: () => sessionPersistence.read(configuration),
+  onSignOut: () => handleRemoteSignOut(),
+});
 
 function setAuthStatus(message, isError = false) {
   authStatus.textContent = message;
@@ -42,6 +51,7 @@ function setActiveLayout(layout) {
 }
 
 function showAuthenticatedApp(profile, people) {
+  if (visualization) return;
   accountName.textContent = profile.name;
   accountEmail.textContent = profile.email;
   authScreen.hidden = true;
@@ -65,38 +75,78 @@ function returnToLogin(message, isError = false) {
   setAuthStatus(message, isError);
 }
 
+function invalidateSession(message, isError = false) {
+  sessionVersion += 1;
+  invalidationVersion += 1;
+  accessToken = null;
+  sessionPersistence.clear();
+  returnToLogin(message, isError);
+}
+
+function isAuthenticationFailure(error) {
+  return error?.code === 'UNAUTHORIZED';
+}
+
+async function restoreOrLoadSession(session, { strictProfileValidation }) {
+  if (!isValidPersistedSession(session, configuration)) return false;
+  const attemptVersion = ++sessionVersion;
+  const attemptInvalidationVersion = invalidationVersion;
+  accessToken = session.accessToken;
+  setAuthStatus('Restoring your Google session…');
+
+  try {
+    const profilePromise = googleSession.getUserProfile(accessToken);
+    const peoplePromise = loadPeopleFromGoogleSheets({
+      accessToken,
+      spreadsheetId: configuration.spreadsheetId,
+      range: configuration.sheetRange,
+    });
+    const [profile, people] = await Promise.all([
+      strictProfileValidation ? profilePromise : profilePromise.catch(() => ({ name: 'Google account', email: '' })),
+      peoplePromise,
+    ]);
+    if (attemptVersion !== sessionVersion || attemptInvalidationVersion !== invalidationVersion) return false;
+    if (people.length !== 200) throw new Error(`Expected 200 people records but received ${people.length}.`);
+    showAuthenticatedApp(profile, people);
+    return true;
+  } catch (error) {
+    if (attemptVersion !== sessionVersion || attemptInvalidationVersion !== invalidationVersion) return false;
+    accessToken = null;
+    if (isAuthenticationFailure(error)) {
+      invalidateSession('Your session has expired. Please sign in again.', true);
+    } else {
+      returnToLogin(error.message, true);
+    }
+    return false;
+  }
+}
+
 async function signIn() {
   signInButton.disabled = true;
   setAuthStatus('Opening Google sign-in…');
 
   try {
-    accessToken = await googleSession.requestAccessToken();
+    const tokenResponse = await googleSession.requestAccessToken();
+    const session = createPersistedSession(tokenResponse, configuration);
+    sessionPersistence.save(session);
     setAuthStatus('Loading people from Google Sheets…');
-    const [profile, people] = await Promise.all([
-      googleSession.getUserProfile(accessToken).catch(() => ({ name: 'Google account', email: '' })),
-      loadPeopleFromGoogleSheets({
-        accessToken,
-        spreadsheetId: configuration.spreadsheetId,
-        range: configuration.sheetRange,
-      }),
-    ]);
-    if (people.length !== 200) {
-      throw new Error(`Expected 200 people records but received ${people.length}.`);
-    }
-    showAuthenticatedApp(profile, people);
+    await restoreOrLoadSession(session, { strictProfileValidation: false });
   } catch (error) {
-    accessToken = null;
-    returnToLogin(error.message, true);
+    invalidateSession(error.message, true);
   } finally {
-    signInButton.disabled = false;
+    if (!visualization) signInButton.disabled = false;
   }
 }
 
-function signOut() {
+function signOut({ broadcast = true, message = 'You have signed out. Sign in with Google to continue.' } = {}) {
   const tokenToRevoke = accessToken;
-  accessToken = null;
+  invalidateSession(message);
   googleSession.revoke(tokenToRevoke);
-  returnToLogin('You have signed out. Sign in with Google to continue.');
+  if (broadcast) sessionChannel.broadcastSignOut();
+}
+
+function handleRemoteSignOut() {
+  invalidateSession('Your session was signed out in another tab. Please sign in again.');
 }
 
 layoutButtons.forEach((button) => {
@@ -106,7 +156,8 @@ layoutButtons.forEach((button) => {
   });
 });
 signInButton.addEventListener('click', signIn);
-signOutButton.addEventListener('click', signOut);
+signOutButton.addEventListener('click', () => signOut());
+window.addEventListener('pagehide', () => sessionChannel.close(), { once: true });
 
 async function initializeAuthentication() {
   if (!configuration.spreadsheetId) {
@@ -118,6 +169,18 @@ async function initializeAuthentication() {
   try {
     setAuthStatus('Preparing secure Google sign-in…');
     await googleSession.initialize();
+
+    const storedSession = sessionPersistence.read(configuration);
+    if (storedSession && await restoreOrLoadSession(storedSession, { strictProfileValidation: true })) return;
+
+    const channelRequestInvalidationVersion = invalidationVersion;
+    const sharedSession = await sessionChannel.requestSession();
+    if (channelRequestInvalidationVersion !== invalidationVersion) return;
+    if (sharedSession && isValidPersistedSession(sharedSession, configuration)) {
+      sessionPersistence.save(sharedSession);
+      if (await restoreOrLoadSession(sharedSession, { strictProfileValidation: true })) return;
+    }
+
     setAuthStatus('Sign in with Google to load the people visualization.');
     signInButton.disabled = false;
   } catch (error) {

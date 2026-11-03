@@ -39,6 +39,12 @@ VITE_GOOGLE_SHEET_RANGE=A:F
 
 Restart Vite after changing `.env.local`. Vite variables prefixed with `VITE_` are public browser configuration—never place an access token, client secret, or API key in them.
 
+## Session behavior
+
+After a successful authorization, the app keeps a short-lived session in `sessionStorage` so a same-tab refresh can restore the visualization without opening an OAuth popup. The session lasts at most 30 minutes and ends earlier if the Google access token is within 60 seconds of its actual `expires_in` expiry. A same-origin tab can request a still-valid session through `BroadcastChannel`, then independently validates it with Google before rendering.
+
+Access tokens are never stored in `localStorage`, URLs, or a backend. `sessionStorage` is not protection against XSS, so this browser-only approach is appropriate only for the assignment's short-lived demonstration session. Signing out clears the local session and notifies same-origin tabs.
+
 ## Production build
 
 ```bash

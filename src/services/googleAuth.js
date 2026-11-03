@@ -91,7 +91,7 @@ export class GoogleTokenSession {
       return;
     }
 
-    this.pendingAuthorization?.resolve(response.access_token);
+    this.pendingAuthorization?.resolve(response);
     this.pendingAuthorization = null;
   }
 
@@ -101,10 +101,21 @@ export class GoogleTokenSession {
   }
 
   async getUserProfile(accessToken) {
-    const response = await this.fetchImplementation('https://openidconnect.googleapis.com/v1/userinfo', {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
-    if (!response.ok) throw new Error('Unable to retrieve the signed-in Google account details.');
+    let response;
+    try {
+      response = await this.fetchImplementation('https://openidconnect.googleapis.com/v1/userinfo', {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+    } catch {
+      const error = new Error('Unable to retrieve the signed-in Google account details.');
+      error.code = 'NETWORK_ERROR';
+      throw error;
+    }
+    if (!response.ok) {
+      const error = new Error('Unable to retrieve the signed-in Google account details.');
+      error.code = response.status === 401 ? 'UNAUTHORIZED' : 'PROFILE_REQUEST_FAILED';
+      throw error;
+    }
     const profile = await response.json();
     return {
       name: profile.name || profile.email || 'Google account',
