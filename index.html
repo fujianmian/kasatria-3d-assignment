@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="Google Sheets powered Three.js CSS3D people visualization" />
+    <title>Kasatria People Visualization</title>
+  </head>
+  <body>
+    <main>
+      <section id="auth-screen" aria-labelledby="auth-title">
+        <div class="auth-card">
+          <p class="auth-card__eyebrow">Kasatria Assignment</p>
+          <h1 id="auth-title">Welcome to People Visualization</h1>
+          <p>Sign in with Google to securely read the shared people dataset from Google Sheets.</p>
+          <button id="sign-in-button" class="google-button" type="button" disabled>Sign in with Google</button>
+          <p id="auth-status" class="auth-card__status" role="status">Preparing secure sign-in…</p>
+        </div>
+      </section>
+
+      <section id="app-shell" hidden>
+        <header id="info">
+          <div>
+            <h1>Kasatria People Visualization</h1>
+            <p id="status" role="status">Preparing visualization…</p>
+          </div>
+          <div class="account-menu">
+            <span id="account-name"></span>
+            <span id="account-email"></span>
+            <button id="sign-out-button" type="button">Sign Out</button>
+          </div>
+        </header>
+        <p id="visualization-instructions" class="visually-hidden">Drag to rotate the people cards, scroll to zoom, and use the layout buttons to change the arrangement.</p>
+        <div id="visualization" aria-label="Interactive people visualization" aria-describedby="visualization-instructions"></div>
+        <aside id="legend" aria-label="Net worth colour legend">
+          <p>Net worth</p>
+          <ul>
+            <li><span class="legend-swatch tier-red"></span>Below $100K</li>
+            <li><span class="legend-swatch tier-orange"></span>$100K–$200K</li>
+            <li><span class="legend-swatch tier-green"></span>$200K and above</li>
+          </ul>
+        </aside>
+        <nav id="menu" aria-label="Visualization layouts">
+          <button type="button" data-layout="table" aria-pressed="false" disabled>TABLE</button>
+          <button type="button" data-layout="sphere" aria-pressed="false" disabled>SPHERE</button>
+          <button type="button" data-layout="helix" aria-pressed="false" disabled>HELIX</button>
+          <button type="button" data-layout="grid" aria-pressed="false" disabled>GRID</button>
+          <button type="button" data-action="reset-view" disabled>RESET VIEW</button>
+        </nav>
+      </section>
+    </main>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
