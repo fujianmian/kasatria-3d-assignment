@@ -92,7 +92,7 @@ test('creates a centered 10 by 4 by 5 grid with unique positions', () => {
   assert.equal(coordinates.reduce((sum, point) => sum + point.z, 0), 0);
 });
 
-test('creates a five-turn double helix with two opposing 100-card strands', () => {
+test('creates a three-turn double helix with two opposing 100-card strands', () => {
   const positions = Array.from({ length: 200 }, (_, index) => getDoubleHelixPosition(index, 200));
   assert.equal(positions.filter(({ strand }) => strand === 0).length, 100);
   assert.equal(positions.filter(({ strand }) => strand === 1).length, 100);
@@ -110,6 +110,15 @@ test('creates a five-turn double helix with two opposing 100-card strands', () =
 
   const strandRotation = positions[198].angle - positions[0].angle;
   assert.ok(Math.abs(strandRotation - DOUBLE_HELIX_TURNS * Math.PI * 2) < 0.000001);
+  assert.ok(DOUBLE_HELIX_TURNS >= 2.5 && DOUBLE_HELIX_TURNS <= 3);
+  assert.equal(new Set(positions.map(({ x, y, z }) => `${x},${y},${z}`)).size, 200);
+
+  const adjacentStrandDistance = Math.hypot(
+    positions[2].x - positions[0].x,
+    positions[2].y - positions[0].y,
+    positions[2].z - positions[0].z,
+  );
+  assert.ok(adjacentStrandDistance > 300);
 });
 
 test('calculates a front-facing finite camera frame for the table', () => {
@@ -149,7 +158,7 @@ test('keeps all six people fields in the card implementation', async () => {
   assert.match(cardSource, /title = person\.name/);
 });
 
-test('defines each layout button and reset action', async () => {
+test('defines four layout buttons without a Reset View control', async () => {
   const [html, main] = await Promise.all([
     readFile(new URL('../index.html', import.meta.url), 'utf8'),
     readFile(new URL('../src/main.js', import.meta.url), 'utf8'),
@@ -157,9 +166,9 @@ test('defines each layout button and reset action', async () => {
   for (const layout of ['table', 'sphere', 'helix', 'grid']) {
     assert.match(html, new RegExp(`data-layout="${layout}"`));
   }
-  assert.match(html, /data-action="reset-view"/);
   assert.match(main, /visualization\?\.transformTo\(button\.dataset\.layout\)/);
-  assert.match(main, /visualization\?\.resetView\(\)/);
+  assert.doesNotMatch(html, /RESET VIEW|reset-view/i);
+  assert.doesNotMatch(main, /resetView|reset-view/);
   assert.match(main, /button\.setAttribute\('aria-pressed', String\(isActive\)\)/);
 });
 

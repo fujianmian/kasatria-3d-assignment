@@ -64,7 +64,7 @@ This is a static Vite application and needs no `vercel.json`, serverless functio
 4. In Google Cloud, add the exact deployed HTTPS origin (for example, `https://your-project.vercel.app`) to the OAuth client's **Authorized JavaScript origins**. Keep the local Vite origin only for development.
 5. Redeploy after changing Vercel variables or the OAuth origin.
 
-For production verification, open the deployed URL in a fresh browser session, select **Sign in with Google**, approve Sheets read access, confirm 200 cards load, exercise all four layouts and Reset View, then Sign Out and sign back in. Submit the resulting deployed HTTPS URL only after this check succeeds.
+For production verification, open the deployed URL in a fresh browser session, select **Sign in with Google**, approve Sheets read access, confirm 200 cards load, exercise all four layouts, then Sign Out and sign back in. Submit the resulting deployed HTTPS URL only after this check succeeds.
 
 Before deploying, run:
 

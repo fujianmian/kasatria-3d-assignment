@@ -12,8 +12,8 @@ const TABLE_ROW_SPACING = 290;
 const CARD_WIDTH = 180;
 const CARD_HEIGHT = 260;
 export const DOUBLE_HELIX_LEVELS = 100;
-export const DOUBLE_HELIX_TURNS = 5;
-const DOUBLE_HELIX_RADIUS = 1_500;
+export const DOUBLE_HELIX_TURNS = 3;
+const DOUBLE_HELIX_RADIUS = 1_800;
 const DOUBLE_HELIX_VERTICAL_SPACING = 45;
 const GRID_COLUMNS = 10;
 const GRID_ROWS = 4;
@@ -24,7 +24,7 @@ const GRID_DEPTH_SPACING = 850;
 const CAMERA_DIRECTIONS = {
   table: new THREE.Vector3(0, 0, 1),
   sphere: new THREE.Vector3(0, 0, 1),
-  helix: new THREE.Vector3(0.75, 0.18, 1),
+  helix: new THREE.Vector3(1.05, 0.12, 1),
   grid: new THREE.Vector3(0.82, 0.48, 1),
 };
 
@@ -230,10 +230,6 @@ export class PeopleVisualization {
       .to({}, this.prefersReducedMotion ? 150 : TRANSITION_DURATION * 2)
       .onUpdate(this.render)
       .start();
-  }
-
-  resetView() {
-    this.animateCameraFrame(this.currentLayout, 800);
   }
 
   dispose() {

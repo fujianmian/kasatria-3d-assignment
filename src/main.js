@@ -19,7 +19,6 @@ const accountName = document.querySelector('#account-name');
 const accountEmail = document.querySelector('#account-email');
 const container = document.querySelector('#visualization');
 const layoutButtons = document.querySelectorAll('[data-layout]');
-const resetButton = document.querySelector('[data-action="reset-view"]');
 
 let visualization = null;
 let accessToken = null;
@@ -32,7 +31,6 @@ function setAuthStatus(message, isError = false) {
 
 function setAppControlsEnabled(enabled) {
   layoutButtons.forEach((button) => { button.disabled = !enabled; });
-  resetButton.disabled = !enabled;
 }
 
 function setActiveLayout(layout) {
@@ -107,7 +105,6 @@ layoutButtons.forEach((button) => {
     setActiveLayout(button.dataset.layout);
   });
 });
-resetButton.addEventListener('click', () => visualization?.resetView());
 signInButton.addEventListener('click', signIn);
 signOutButton.addEventListener('click', signOut);
 
